@@ -15,11 +15,11 @@ import logging
 import os
 import re
 import sys
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.robotparser import RobotFileParser
 from urllib.parse import urlparse
 
 import requests
@@ -43,6 +43,7 @@ DEFAULT_BATCH_SIZE = 64
 MAX_HTML_BYTES = 15 * 1024 * 1024
 REQUEST_TIMEOUT = (8, 30)
 MAX_RETRIES = 3
+USER_AGENT = "NorthstarClinicalKnowledgeBot/1.0"
 _LOGGER = logging.getLogger("scrape_ingest")
 
 
@@ -86,7 +87,7 @@ def make_session() -> requests.Session:
     )
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "NorthstarClinicalKnowledgeBot/1.0 (public-guideline-indexing; contact: admin)",
+        "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml",
     })
     adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=4)
@@ -97,7 +98,7 @@ def make_session() -> requests.Session:
 def _validate_public_url(url: str) -> str:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower().rstrip(".")
-    if parsed.scheme != "https" or host not in ALLOWED_HOSTS:
+    if parsed.scheme != "https" or host not in ALLOWED_HOSTS or parsed.port not in (None, 443) or parsed.username or parsed.password:
         raise ValueError(f"URL is outside the HTTPS source allowlist: {url}")
     return host
 
@@ -124,9 +125,37 @@ def _read_limited_response(response: requests.Response, limit: int) -> bytes:
     return b"".join(chunks)
 
 
-def scrape_url(session: requests.Session, url: str) -> ScrapedDocument:
+def _robots_allows(session: requests.Session, url: str, cache: dict[str, RobotFileParser]) -> bool:
+    parsed = urlparse(url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    parser = cache.get(origin)
+    if parser is None:
+        robots_url = f"{origin}/robots.txt"
+        response = session.get(robots_url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        try:
+            _validate_public_url(response.url)
+            if response.status_code in (404, 410):
+                lines: list[str] = []
+            else:
+                response.raise_for_status()
+                lines = response.text.splitlines()
+        finally:
+            response.close()
+        parser = RobotFileParser(robots_url)
+        parser.parse(lines)
+        cache[origin] = parser
+    return parser.can_fetch(USER_AGENT, url)
+
+
+def scrape_url(
+    session: requests.Session,
+    url: str,
+    robots_cache: dict[str, RobotFileParser] | None = None,
+) -> ScrapedDocument:
     """Fetch and extract a page, retaining tables and its canonical URL."""
     _validate_public_url(url)
+    if not _robots_allows(session, url, robots_cache if robots_cache is not None else {}):
+        raise ValueError("Scraping is disallowed for this path by the site's robots.txt")
     response = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True, stream=True)
     try:
         _validate_public_url(response.url)
@@ -219,7 +248,7 @@ def make_chunk_records(document: ScrapedDocument) -> list[dict[str, Any]]:
 def _is_transient_error(exc: BaseException) -> bool:
     name = type(exc).__name__.lower()
     message = str(exc).lower()
-    markers = ("timeout", "connection", "temporar", "rate limit", "429", "502", "503", "504", "server closed")
+    markers = ("timeout", "connection", "temporar", "rate limit", "ratelimit", "429", "502", "503", "504", "server closed")
     return any(marker in name or marker in message for marker in markers)
 
 
@@ -400,6 +429,7 @@ async def run(args: argparse.Namespace) -> int:
     chunks: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
     session = make_session()
+    robots_cache: dict[str, RobotFileParser] = {}
     try:
         try:
             from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -419,7 +449,7 @@ async def run(args: argparse.Namespace) -> int:
             else:
                 _LOGGER.info("Scraping %s", url)
             try:
-                document = scrape_url(session, url)
+                document = scrape_url(session, url, robots_cache)
                 source_chunks = make_chunk_records(document)
                 documents.append(document)
                 chunks.extend(source_chunks)
