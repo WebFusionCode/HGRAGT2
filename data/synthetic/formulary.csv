@@ -1,0 +1,6 @@
+Item,Category,Formulary status,Prior authorization,Operational note,Review date
+Medication Alpha,Example medicine,Preferred,No,Use the current order set for all prescribing details,2025-12-31
+Medication Beta,Example medicine,Restricted,Yes,Submit the fictional payer coverage form before dispensing,2025-12-31
+Medication Gamma,Example medicine,Non-formulary,Not applicable,Refer requests to the pharmacy committee,2025-12-31
+Transfer Sling Model A,Reusable equipment,Approved,No,Follow the device manual and infection prevention SOP,2026-06-30
+Transfer Sling Model B,Reusable equipment,Review required,Yes,Confirm payer policy and local equipment approval,2026-06-30

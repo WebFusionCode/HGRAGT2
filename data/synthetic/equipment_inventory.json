@@ -1,0 +1,8 @@
+{
+  "records": [
+    {"asset_id": "SYN-SLING-001", "equipment_type": "transfer sling", "location": "unit A", "status": "available", "inspection_due": "2026-02-01"},
+    {"asset_id": "SYN-SLING-002", "equipment_type": "transfer sling", "location": "unit B", "status": "out of service", "inspection_due": "2025-11-15"},
+    {"asset_id": "SYN-LIFT-001", "equipment_type": "mobile lift", "location": "unit A", "status": "available", "inspection_due": "2026-01-15"},
+    {"asset_id": "SYN-LIFT-002", "equipment_type": "mobile lift", "location": "unit C", "status": "maintenance", "inspection_due": "2025-10-20"}
+  ]
+}
