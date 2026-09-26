@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pydantic
+litellm
+asyncpg
+pgvector
+numpy
+python-dotenv
+sentence-transformers
