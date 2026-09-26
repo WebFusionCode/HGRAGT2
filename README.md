@@ -1,8 +1,8 @@
-# Northstar knowledge desk
+# VoughtCrop
 
-A local-first healthcare knowledge retrieval demo. It indexes fictional organization documents, filters passages by a selected role before ranking, quotes retrieved evidence with passage citations, surfaces curated version conflicts, and refuses questions the accessible corpus cannot support.
+A local-first healthcare knowledge retrieval demo. It indexes fictional organization documents and, by default, fetches a small allowlisted set of public clinical pages at API startup. It filters passages by role before ranking, quotes retrieved evidence with passage citations, surfaces curated organization-policy conflicts, and refuses questions the accessible corpus cannot support.
 
-All included records and organization policies are synthetic. The demo does not call a hosted answer model and is not for patient care.
+All organization records and policies are synthetic. Public clinical pages are fetched live and may be unavailable or change without notice. The demo does not call a hosted answer model and is not for patient care.
 
 ## Run locally
 
@@ -36,14 +36,18 @@ Add a source file and manifest entry, then restart the API to rebuild the in-mem
 
 ## Public guideline ingestion
 
-`scrape_ingest.py` is a separate PostgreSQL/pgvector ingestion path for the configured CDC and AAFP public pages. Install the added dependencies, configure `DATABASE_URL` and LiteLLM provider credentials in the environment or an untracked `.env`, then run:
+At API startup, `main.py` scrapes and validates the allowlisted CDC, AAFP, NCBI/PMC, and Cleveland Clinic URLs in `scrape_ingest.py`, then adds usable pages directly to the in-memory retriever used by chat. Pages under 200 characters or containing common block-page markers are skipped and logged; there is no fabricated fallback in the live chat index. Disable live fetching with `ENABLE_PUBLIC_WEB_SOURCES=0`. The API does not read from PostgreSQL.
+
+`scrape_ingest.py` also provides a separate optional PostgreSQL/pgvector persistence path. Configure `DATABASE_URL` and LiteLLM provider credentials in the environment or an untracked `.env`, then run:
 
 ```bash
 python scrape_ingest.py --dry-run
 python scrape_ingest.py
 ```
 
-The default embedding model is `openai/text-embedding-3-small` with 384 dimensions. Set `EMBEDDING_MODEL` and `EMBEDDING_DIMENSIONS` together when using another model; the script validates the database vector dimension before writing. A run fetches and embeds all successfully extracted pages before transactionally replacing those URLs, preserving the previous indexed passages if embedding or insertion fails. Source roles are stored with each passage (`patient`/`clinician` for CDC HEADS UP, `clinician` for HCP sources); downstream retrieval must enforce `allowed_roles` in its database query. The current demo API still reads only the local in-memory synthetic corpus and does not query this PostgreSQL table.
+Scrape validation rejects short pages and common access-block messages, and prints a short extraction preview. If every URL fails, one clinician-scoped fallback passage is tagged `demo_only`, `unverified`, and without a citation URL; never treat it as clinical guidance. To clear the database table before a demo, run `python clear_db.py --confirm`; this irreversibly truncates `clinical_chunks`.
+
+The default embedding model is `openai/text-embedding-3-small` with 384 dimensions. Set `EMBEDDING_MODEL` and `EMBEDDING_DIMENSIONS` together when using another model; the script validates the database vector dimension before writing. A run fetches and embeds all successfully extracted pages before transactionally replacing those URLs, preserving the previous indexed passages if embedding or insertion fails. Source roles are stored with each passage; any future database-backed retriever must enforce `allowed_roles` in its SQL query.
 
 ## Retrieval and answer behavior
 
@@ -65,11 +69,11 @@ Run the included eight-question benchmark:
 python3 evaluate.py
 ```
 
-The report checks expected-source recall, refusal accuracy, curated conflict detection, claim-to-source citation coverage, exact passage support, ACL leaks, and identifier leakage. The Quality view runs the same benchmark through the API. Scores are for this authored synthetic set only; they are not a clinical safety certification or a generalization estimate.
+The report checks expected-source recall, refusal accuracy, curated conflict detection, claim-to-source citation coverage, exact passage support, ACL leaks, and identifier leakage. The Quality view runs the same authored benchmark through the API's currently loaded corpus. Public-source availability can change the retrieval results; scores are not a clinical safety certification or a generalization estimate.
 
 ## Operational limits
 
-- The index is rebuilt in memory from the local manifest at API startup; there is no multi-tenant persistence, audit log, document upload flow, or production identity provider.
+- The local index is rebuilt from the manifest and live public pages at API startup; there is no multi-tenant persistence, audit log, document upload flow, or production identity provider. PostgreSQL ingestion is separate and is not queried by this demo API.
 - Roles and conflict keys require governance. Do not treat UI role simulation as authentication.
 - Direct-identifier patterns do not detect every name or indirect identifier. Never enter real patient information.
 - The default vector fallback is TF-IDF. Enable and evaluate a neural encoder against the target corpus before relying on it.

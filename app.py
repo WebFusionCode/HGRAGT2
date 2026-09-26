@@ -8,7 +8,7 @@ import streamlit as st
 
 
 st.set_page_config(
-    page_title="VoughtCorp",
+    page_title="VoughtCrop",
     page_icon=":material/clinical_notes:",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -24,6 +24,8 @@ ROLE_LABELS = {
 EXAMPLES = [
     "Can staff reuse a transfer sling with visible contamination after wiping it?",
     "What should staff check before an assisted transfer?",
+    "What initial rest and return-to-activity advice does the concussion guidance give?",
+    "What conservative care does the indexed Achilles source describe?",
     "Does Medication Beta require prior authorization?",
     "What dose of amoxicillin is approved for a child?",
 ]
@@ -78,6 +80,9 @@ def render_citation(citation_id: str, source: dict[str, Any]) -> None:
         if metadata.get("effective_date"):
             details.append(f"effective {metadata['effective_date']}")
         st.caption(" | ".join(str(value) for value in details if value))
+        source_url = metadata.get("source_url") or metadata.get("citation_url")
+        if source_url:
+            st.link_button("Open source page", source_url, icon=":material/open_in_new:", width="content")
         st.write(source["content"])
         st.caption(f"Passage ID: {citation_id}")
 
@@ -101,6 +106,9 @@ def render_result(result: dict[str, Any]) -> None:
                 citation_id = passage["id"]
                 render_citation(citation_id, sources[citation_id])
     elif result.get("claims"):
+        answer_text = result.get("answer", "")
+        if answer_text.startswith("A matching source is past its scheduled review date"):
+            st.warning(answer_text.split("\n\n", 1)[0], icon=":material/warning:")
         st.markdown("**Retrieved statements**")
         for claim in result["claims"]:
             st.markdown(claim["text"])
@@ -136,7 +144,7 @@ for key, default in (("chat_history", []), ("pending_question", ""), ("evaluatio
     if key not in st.session_state:
         st.session_state[key] = default
 
-st.title(":material/clinical_notes: Northstar knowledge desk")
+st.title(":material/clinical_notes: VoughtCrop")
 st.caption("Evidence workspace for clinical guidance, operations, formulary rules, and source conflicts")
 
 with st.sidebar:
@@ -156,11 +164,15 @@ with st.sidebar:
     try:
         health = fetch_health()
         st.success("Local API ready", icon=":material/check_circle:")
-        st.caption("All indexed content is synthetic. No hosted answer model is called.")
+        public_count = health.get("public_source_count", 0)
+        if public_count:
+            st.caption(f"{public_count} validated public source(s) are loaded with synthetic organization records. Answers quote evidence; no hosted answer model is called.")
+        else:
+            st.caption("The local synthetic corpus is loaded. No hosted answer model is called.")
     except requests.RequestException:
         health = None
         st.error("Local API is offline. Start the backend on port 8000.", icon=":material/wifi_off:")
-    st.caption("Northstar demo | local workspace")
+    st.caption("VoughtCrop | local workspace")
 
 if health:
     metric_docs, metric_passages, metric_search = st.columns(3)
@@ -241,6 +253,8 @@ elif view == "Corpus":
                 detail, count = st.columns([3, 1])
                 detail.badge(status, color="green" if status == "current" else "orange" if status == "review due" else "gray")
                 count.metric("Passages", document["chunk_count"])
+                if document.get("source_url"):
+                    st.link_button("Open source page", document["source_url"], icon=":material/open_in_new:", width="content")
                 if document.get("superseded_by"):
                     st.caption(f"Superseded by {document['superseded_by']}")
     except requests.RequestException:
@@ -248,7 +262,7 @@ elif view == "Corpus":
 
 else:
     st.subheader("Retrieval quality", divider="gray")
-    st.caption("Deterministic benchmark over a small, authored question set. Scores reflect this synthetic corpus only.")
+    st.caption("Deterministic benchmark over a small, authored question set and the corpus currently loaded by the API.")
     if st.button("Run evaluation", type="primary", icon=":material/play_arrow:"):
         try:
             with st.spinner("Running retrieval, refusal, citation, conflict, and privacy checks"):

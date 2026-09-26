@@ -13,13 +13,16 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 
-_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9'-]*", re.I)
+_TOKEN_RE = re.compile(r"[a-z0-9]+", re.I)
 _STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "been", "before", "can", "could", "do", "does", "for", "from", "give", "how", "i", "in", "is", "it", "me", "of", "on", "or", "please", "should", "tell", "that", "the", "their", "them", "this", "to", "use", "was", "what", "when", "where", "which", "who", "with", "would",
 }
 _SYNONYMS = {
     "assisted": ["assistance", "help"],
+    "activities": ["activity", "physical activity", "daily activities", "exercise"],
+    "activity": ["activities", "physical activity", "daily activities", "exercise"],
     "checks": ["check", "inspection"],
+    "concussion": ["mild traumatic brain injury", "mTBI", "head injury"],
     "dirty": ["contamination", "visible soil"],
     "soiled": ["contamination", "visible soil"],
     "contaminated": ["contamination", "visible soil"],
@@ -35,7 +38,14 @@ _SYNONYMS = {
     "quantity": ["count", "available"],
     "count": ["quantity", "available"],
     "located": ["location"],
+    "limited": ["limit", "restrict", "avoid"],
+    "limit": ["limited", "restrict", "avoid"],
     "lifts": ["lift"],
+    "initial": ["first", "early", "beginning"],
+    "period": ["duration", "hours", "days"],
+    "possible": ["suspected", "potential"],
+    "recommended": ["recommend", "recommendation", "advised", "suggest"],
+    "rest": ["relative rest", "physical and cognitive rest", "reduced activity"],
 }
 
 
@@ -175,7 +185,8 @@ class HybridRetriever:
         relevant_query_tokens = [token for token in query_tokens if len(token) > 2]
         matched_query_terms = sum(_query_term_covered(token, matched_tokens) for token in relevant_query_tokens)
         coverage = matched_query_terms / max(len(relevant_query_tokens), 1)
-        missing = [token for token in relevant_query_tokens if not any(token in doc for doc in doc_tokens)]
+        all_accessible_tokens = {token for doc in doc_tokens for token in doc}
+        missing = [token for token in relevant_query_tokens if not _query_term_covered(token, all_accessible_tokens)]
         unmatched_specific_terms = [
             token for token in relevant_query_tokens
             if len(token) >= 7 and not _query_term_covered(token, matched_tokens)
@@ -202,6 +213,14 @@ class HybridRetriever:
                 if date.fromisoformat(review_date) < date.today():
                     return "review due"
             except ValueError:
+                pass
+        published_date = metadata.get("published_date")
+        if published_date:
+            try:
+                published = date.fromisoformat(published_date[:10])
+                if (date.today() - published).days > 730:
+                    return "review due"
+            except (TypeError, ValueError):
                 pass
         return "current"
 

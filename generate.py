@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Any
 
 from ingest import contains_identifier, redact_identifiers
-from retrieve import tokenize
+from retrieve import _SYNONYMS, tokenize
 
 
 def _missing_message(terms: list[str]) -> str:
@@ -18,8 +18,11 @@ def _missing_message(terms: list[str]) -> str:
 
 def _extract_claims(query: str, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     query_terms = set(tokenize(query))
-    claims: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    expanded_query_terms = set(query_terms)
+    for term in query_terms:
+        for expansion in _SYNONYMS.get(term, []):
+            expanded_query_terms.update(tokenize(expansion))
+    ranked_claims: list[tuple[float, int, int, str, str, str]] = []
     table_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for source in sources:
         if source["metadata"].get("table"):
@@ -30,7 +33,7 @@ def _extract_claims(query: str, sources: list[dict[str, Any]]) -> list[dict[str,
         for source in rows:
             item_label = source["content"].split("|", 1)[0].partition(":")[2]
             item_terms = set(tokenize(item_label)) - {"medication", "example", "medicine", "equipment", "transfer", "sling", "model"}
-            if item_terms & query_terms:
+            if item_terms & expanded_query_terms:
                 matching_rows.append(source["id"])
         if matching_rows:
             focused_table_ids.update(matching_rows)
@@ -47,20 +50,34 @@ def _extract_claims(query: str, sources: list[dict[str, Any]]) -> list[dict[str,
         else:
             candidates = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", content) if part.strip()]
 
-        ranked = []
+        ranked: list[tuple[float, int, int, str]] = []
         for candidate in candidates:
             terms = set(tokenize(candidate))
-            overlap = len(query_terms & terms)
-            if overlap:
-                ranked.append((overlap / max(len(query_terms), 1), overlap, candidate))
-        ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+            direct_overlap = len(query_terms & terms)
+            expanded_overlap = len(expanded_query_terms & terms)
+            weighted_overlap = direct_overlap * 3 + max(expanded_overlap - direct_overlap, 0)
+            if weighted_overlap:
+                ranked.append((weighted_overlap / max(len(query_terms), 1), direct_overlap, expanded_overlap, candidate))
+        ranked.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
         limit = 1 if metadata.get("table") or "record_number" in metadata or "row_number" in metadata else 2
-        for _, _, statement in ranked[:limit]:
-            key = (source["id"], statement)
-            if key in seen:
-                continue
-            seen.add(key)
-            claims.append({"text": statement, "citations": [source["id"]], "source_status": metadata.get("status", "active")})
+        for relevance, direct_overlap, expanded_overlap, statement in ranked[:limit]:
+            ranked_claims.append((relevance, direct_overlap, expanded_overlap, source["id"], statement, metadata.get("status", "active")))
+
+    ranked_claims.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    claims: list[dict[str, Any]] = []
+    claim_by_text: dict[str, dict[str, Any]] = {}
+    for _, _, _, source_id, statement, status in ranked_claims:
+        normalized = re.sub(r"\W+", " ", statement.lower()).strip()
+        existing = claim_by_text.get(normalized)
+        if existing:
+            if source_id not in existing["citations"]:
+                existing["citations"].append(source_id)
+            continue
+        claim = {"text": statement, "citations": [source_id], "source_status": status}
+        claims.append(claim)
+        claim_by_text[normalized] = claim
+        if len(claims) == 5:
+            break
     return claims
 
 
@@ -102,7 +119,7 @@ def generate_clinical_response(
             safe, _ = redact_identifiers(response)
             return {"answer": safe, "claims": [], "decision": "refused", "missing_evidence": missing}
 
-    claim_lines = [f"- {claim['text']} [{claim['citations'][0]}]" for claim in claims]
+    claim_lines = [f"- {claim['text']} [{', '.join(claim['citations'])}]" for claim in claims]
     if conflicts:
         conflict = conflicts[0]
         claims = [
@@ -116,7 +133,7 @@ def generate_clinical_response(
         answer = "Conflicting instructions were retrieved. The source status and effective date matter; escalate to the named policy owner before acting.\n\n" + "\n".join(conflict_lines)
         decision = "conflict"
     else:
-        answer = "Retrieved evidence (quoted from current sources):\n\n" + "\n".join(claim_lines)
+        answer = "Retrieved evidence (verbatim passages):\n\n" + "\n".join(claim_lines)
         decision = "answered"
         overdue = [source for source in current_sources if source.get("freshness_status") == "review due"]
         if overdue:
