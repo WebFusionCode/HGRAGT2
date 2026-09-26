@@ -29,13 +29,19 @@ from urllib3.util.retry import Retry
 
 
 TARGET_URLS = (
-    "https://www.cdc.gov/heads-up/guidelines/recovery-from-concussion.html",
-    "https://www.cdc.gov/traumatic-brain-injury/hcp/data-research/index.html",
-    "https://www.aafp.org/afp/2019/0401/p426",
-    "https://www.ncbi.nlm.nih.gov/books/NBK538149",
-    "https://pmc.ncbi.nlm.nih.gov/articles/PMC5112330",
-    "https://my.clevelandclinic.org/health/diseases/21553-achilles-tendinitis",
-    "https://www.ncbi.nlm.nih.gov/books/NBK537017",
+    "https://www.cdc.gov/heads-up/guidelines/recovery-from-concussion.html/",
+    "https://www.cdc.gov/traumatic-brain-injury/hcp/data-research/index.html/",
+    "https://www.aafp.org/afp/2019/0401/p426/",
+    "https://www.ncbi.nlm.nih.gov/books/NBK538149/",
+    "https://pmc.ncbi.nlm.nih.gov/articles/PMC5112330/",
+    "https://my.clevelandclinic.org/health/diseases/21553-achilles-tendinitis/",
+    "https://www.ncbi.nlm.nih.gov/books/NBK537017/",
+    "https://www.ncbi.nlm.nih.gov/sites/books/NBK539859/",
+    "https://www.ncbi.nlm.nih.gov/books/NBK544305/",
+    "https://www.ncbi.nlm.nih.gov/books/NBK430839/",
+    "https://www.ncbi.nlm.nih.gov/books/NBK539800/"
+    
+    
 )
 
 ALLOWED_HOSTS = {
