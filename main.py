@@ -8,11 +8,13 @@ from time import perf_counter
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from starlette.concurrency import run_in_threadpool
 
 from evaluation import run_evaluation
 from generate import generate_clinical_response
 from ingest import contains_identifier, load_corpus, redact_identifiers
 from models import QueryRequest, QueryResponse
+from pubmed_search import search_pubmed_abstracts
 from retrieve import HybridRetriever
 
 _LOGGER = logging.getLogger("northstar.api")
@@ -161,6 +163,7 @@ async def query_knowledge(request: Request, payload: QueryRequest) -> QueryRespo
         ranked_sources: list[dict[str, Any]] = []
         conflicts: list[dict[str, Any]] = []
         retrieval_mode = retriever.retrieval_mode
+        public_search_status = "identifier_blocked" if payload.include_public_search else "not_requested"
     else:
         result = retriever.search(payload.query, payload.user_role)
         ranked_sources = result["sources"]
@@ -175,6 +178,53 @@ async def query_knowledge(request: Request, payload: QueryRequest) -> QueryRespo
             matched_query_terms=result["matched_query_terms"],
             unmatched_specific_terms=result["unmatched_specific_terms"],
         )
+        public_search_status = "not_requested"
+
+        if payload.include_public_search:
+            if payload.user_role != "clinician":
+                public_search_status = "unsupported_role"
+            elif response["decision"] == "conflict":
+                public_search_status = "skipped_conflict"
+            else:
+                stale_local_evidence = any(source.get("freshness_status") == "review due" for source in ranked_sources)
+                if response["decision"] != "refused" and not stale_local_evidence:
+                    public_search_status = "not_needed"
+                else:
+                    try:
+                        external_chunks, public_search_status = await run_in_threadpool(
+                            search_pubmed_abstracts, payload.query, payload.user_role
+                        )
+                    except Exception as exc:
+                        _LOGGER.warning("PubMed fallback unavailable (%s)", type(exc).__name__)
+                        external_chunks = []
+                        public_search_status = "unavailable"
+
+                    if external_chunks:
+                        external_retriever = HybridRetriever(external_chunks)
+                        external_result = external_retriever.search(payload.query, payload.user_role)
+                        external_response = generate_clinical_response(
+                            payload.query,
+                            external_result["sources"],
+                            conflicts=external_result["conflicts"],
+                            missing_evidence=external_result["missing_evidence"],
+                            evidence_coverage=external_result["coverage"],
+                            matched_query_terms=external_result["matched_query_terms"],
+                            unmatched_specific_terms=external_result["unmatched_specific_terms"],
+                        )
+                        if external_response["decision"] == "answered":
+                            response = external_response
+                            ranked_sources = external_result["sources"]
+                            conflicts = external_result["conflicts"]
+                            retrieval_mode = f"{retriever.retrieval_mode} + PubMed fallback"
+                            public_search_status = "answered"
+                        else:
+                            public_search_status = "no_support"
+                            existing_ids = {source["id"] for source in ranked_sources}
+                            ranked_sources.extend(
+                                source for source in external_result["sources"]
+                                if source["id"] not in existing_ids
+                            )
+                            response["missing_evidence"] = external_response["missing_evidence"] or response["missing_evidence"]
 
     elapsed_ms = (perf_counter() - started) * 1_000
     public_sources = [
@@ -189,6 +239,7 @@ async def query_knowledge(request: Request, payload: QueryRequest) -> QueryRespo
         processing_ms=round(elapsed_ms, 2),
         pii_blocked=response["decision"] == "identifier_blocked",
         corpus_redactions=request.app.state.corpus["redactions"],
+        public_search_status=public_search_status,
     )
 
 

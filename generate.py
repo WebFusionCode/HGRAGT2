@@ -18,6 +18,7 @@ def _missing_message(terms: list[str]) -> str:
 
 def _extract_claims(query: str, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     query_terms = set(tokenize(query))
+    historical_query = bool(query_terms & {"historical", "history", "previously", "formerly"})
     expanded_query_terms = set(query_terms)
     for term in query_terms:
         for expansion in _SYNONYMS.get(term, []):
@@ -52,6 +53,17 @@ def _extract_claims(query: str, sources: list[dict[str, Any]]) -> list[dict[str,
 
         ranked: list[tuple[float, int, int, str]] = []
         for candidate in candidates:
+            if (
+                metadata.get("source_type") == "PubMed guideline/review abstract"
+                and re.match(r"^(?:BACKGROUND|INTRODUCTION|METHODS|OBJECTIVE|PURPOSE|RATIONALE|AIM):", candidate, re.I)
+            ):
+                continue
+            if (
+                metadata.get("source_type") == "PubMed guideline/review abstract"
+                and not historical_query
+                and re.match(r"^(?:previous(?:ly)?|historically|formerly|in the past)\b", candidate, re.I)
+            ):
+                continue
             terms = set(tokenize(candidate))
             direct_overlap = len(query_terms & terms)
             expanded_overlap = len(expanded_query_terms & terms)

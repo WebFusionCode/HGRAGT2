@@ -17,6 +17,11 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+", re.I)
 _STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "been", "before", "can", "could", "do", "does", "for", "from", "give", "how", "i", "in", "is", "it", "me", "of", "on", "or", "please", "should", "tell", "that", "the", "their", "them", "this", "to", "use", "was", "what", "when", "where", "which", "who", "with", "would",
 }
+_QUESTION_MODIFIERS = {
+    "advised", "after", "according", "current", "first", "following", "initial",
+    "possible", "potential", "recommended", "recommendation", "should", "suggested",
+    "suspected",
+}
 _SYNONYMS = {
     "assisted": ["assistance", "help"],
     "activities": ["activity", "physical activity", "daily activities", "exercise"],
@@ -182,7 +187,10 @@ class HybridRetriever:
         ranked.sort(key=lambda item: item["score"], reverse=True)
         top_sources = [item for item in ranked if item["score"] >= 0.08][:top_k]
         matched_tokens = set(token for item in top_sources[:top_k] for token in tokenize(item["content"]))
-        relevant_query_tokens = [token for token in query_tokens if len(token) > 2]
+        relevant_query_tokens = [
+            token for token in query_tokens
+            if len(token) > 2 and token not in _QUESTION_MODIFIERS
+        ]
         matched_query_terms = sum(_query_term_covered(token, matched_tokens) for token in relevant_query_tokens)
         coverage = matched_query_terms / max(len(relevant_query_tokens), 1)
         all_accessible_tokens = {token for doc in doc_tokens for token in doc}

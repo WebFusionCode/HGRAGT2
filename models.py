@@ -9,6 +9,7 @@ UserRole = Literal["clinician", "operations", "billing_admin", "patient"]
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=3, max_length=1_000, description="A de-identified question about organizational knowledge.")
     user_role: UserRole = Field(default="clinician", description="Demo role used by the retrieval access filter.")
+    include_public_search: bool = Field(default=False, description="Opt in to a PubMed search only when local evidence is insufficient.")
 
 
 class AnswerClaim(BaseModel):
@@ -56,3 +57,4 @@ class QueryResponse(BaseModel):
     processing_ms: float
     pii_blocked: bool = False
     corpus_redactions: int = 0
+    public_search_status: str = "not_requested"

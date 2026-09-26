@@ -98,6 +98,27 @@ def render_result(result: dict[str, Any]) -> None:
     }
     label, color = status_labels.get(decision, ("Review required", "gray"))
     st.badge(label, color=color)
+    public_search_status = result.get("public_search_status", "not_requested")
+    if public_search_status == "answered":
+        st.info("Quoted from PubMed abstracts, not organization-approved policy. Review dates and differences before acting.", icon=":material/science:")
+    elif public_search_status == "no_support":
+        st.info("PubMed was searched, but its abstracts did not support a citation-complete answer; local evidence is retained.", icon=":material/search_off:")
+    elif public_search_status in {"no_results", "no_abstracts"}:
+        st.info("The public search returned no usable guideline or review abstracts.", icon=":material/search_off:")
+    elif public_search_status in {"unavailable", "response_too_large"}:
+        st.warning("PubMed fallback did not return usable evidence; no external evidence was added.", icon=":material/warning:")
+    elif public_search_status in {"invalid_query", "no_search_terms"}:
+        st.caption("No usable de-identified clinical search terms were available for PubMed.")
+    elif public_search_status == "unsupported_role":
+        st.caption("Public PubMed fallback is limited to the clinician role.")
+    elif public_search_status == "local_or_high_risk_scope":
+        st.caption("PubMed fallback is not used for organization policy, formulary, approval, operational, or dosing questions.")
+    elif public_search_status == "skipped_conflict":
+        st.caption("Public search was skipped because accessible organization sources conflict.")
+    elif public_search_status == "identifier_blocked":
+        st.caption("External search was blocked because the query matched a direct-identifier pattern.")
+    elif decision == "refused":
+        st.caption("No external public search was requested.")
 
     if decision == "conflict":
         for conflict in result.get("conflicts", []):
@@ -201,6 +222,14 @@ if view == "Ask":
                 st.session_state.pending_question = example
                 st.rerun()
 
+    include_public_search = False
+    if selected_role == "clinician":
+        include_public_search = st.checkbox(
+            "PubMed fallback",
+            key="include_public_search",
+            help="If local evidence is insufficient or stale, send general clinical search terms to NCBI PubMed. Never include patient names or details.",
+        )
+
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             if message["role"] == "user":
@@ -220,8 +249,12 @@ if view == "Ask":
                 with st.spinner("Searching accessible evidence"):
                     response = requests.post(
                         f"{API_ROOT}/api/v1/query",
-                        json={"query": question, "user_role": selected_role},
-                        timeout=25,
+                        json={
+                            "query": question,
+                            "user_role": selected_role,
+                            "include_public_search": include_public_search,
+                        },
+                        timeout=45,
                     )
                     response.raise_for_status()
                     result = response.json()
