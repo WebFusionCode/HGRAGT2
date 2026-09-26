@@ -1,19 +1,58 @@
+from typing import Any, Literal
+
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+
+
+UserRole = Literal["clinician", "operations", "billing_admin", "patient"]
+
 
 class QueryRequest(BaseModel):
-    query: str = Field(..., description="The clinical question to answer.")
-    user_role: str = Field(
-        default="clinician", 
-        description="RBAC role of the user requesting information (e.g., 'clinician', 'patient')."
-    )
+    query: str = Field(..., min_length=3, max_length=1_000, description="A de-identified question about organizational knowledge.")
+    user_role: UserRole = Field(default="clinician", description="Demo role used by the retrieval access filter.")
+
+
+class AnswerClaim(BaseModel):
+    text: str
+    citations: list[str]
+    source_status: str
+
 
 class SourceDocument(BaseModel):
     id: str
+    doc_id: str
+    title: str
     content: str
-    metadata: Dict[str, Any]
-    score: float = Field(..., description="The RRF fusion score or retrieval score.")
+    metadata: dict[str, Any]
+    score: float
+    bm25_score: float
+    vector_score: float
+    freshness_status: str
+
+
+class ConflictPassage(BaseModel):
+    id: str
+    doc_id: str
+    title: str
+    status: str
+    effective_date: str | None = None
+    stance: str
+    content: str
+
+
+class ConflictRecord(BaseModel):
+    topic: str
+    summary: str
+    passages: list[ConflictPassage]
+
 
 class QueryResponse(BaseModel):
-    answer: str = Field(..., description="The generated answer with inline citations or epistemic refusal.")
-    sources: List[SourceDocument] = Field(..., description="List of documents retrieved and used as context.")
+    answer: str
+    claims: list[AnswerClaim]
+    sources: list[SourceDocument]
+    conflicts: list[ConflictRecord]
+    missing_evidence: list[str]
+    decision: Literal["answered", "conflict", "refused", "identifier_blocked"]
+    retrieval_mode: str
+    processing_ms: float
+    pii_blocked: bool = False
+    corpus_redactions: int = 0

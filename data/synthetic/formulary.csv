@@ -4,3 +4,17 @@ Medication Beta,Example medicine,Restricted,Yes,Submit the fictional payer cover
 Medication Gamma,Example medicine,Non-formulary,Not applicable,Refer requests to the pharmacy committee,2025-12-31
 Transfer Sling Model A,Reusable equipment,Approved,No,Follow the device manual and infection prevention SOP,2026-06-30
 Transfer Sling Model B,Reusable equipment,Review required,Yes,Confirm payer policy and local equipment approval,2026-06-30
+Medication Delta,Example medicine,Preferred,No,See the current order set for clinical use information,2025-12-31
+Medication Epsilon,Example medicine,Restricted,Yes,Attach supporting documentation to the fictional coverage request,2025-12-31
+Medication Zeta,Example medicine,Non-formulary,Not applicable,Refer exception requests to the pharmacy committee,2025-12-31
+Medication Eta,Example medicine,Preferred,No,Formulary listing does not specify an individual dose,2025-12-31
+Medication Theta,Example medicine,Restricted,Yes,Prior authorization decision is required before claim submission,2025-12-31
+Medication Iota,Example medicine,Preferred,No,Use the current clinical order set for prescribing details,2025-12-31
+Medication Kappa,Example medicine,Review required,Yes,Confirm current payer requirements with billing policy,2025-12-31
+Medication Lambda,Example medicine,Non-formulary,Not applicable,Route requests to the pharmacy committee,2025-12-31
+Medication Mu,Example medicine,Preferred,No,The table records status only and is not a dosing reference,2025-12-31
+Medication Nu,Example medicine,Restricted,Yes,Submit the current fictional payer authorization form,2025-12-31
+Medication Xi,Example medicine,Review required,Yes,Confirm the review outcome before claim submission,2025-12-31
+Medication Omicron,Example medicine,Preferred,No,Refer clinical decisions to the responsible clinician,2025-12-31
+Medication Pi,Example medicine,Non-formulary,Not applicable,Refer exception requests to the pharmacy committee,2025-12-31
+Medication Rho,Example medicine,Restricted,Yes,The payer decision does not establish clinical suitability,2025-12-31

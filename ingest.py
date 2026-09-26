@@ -15,7 +15,7 @@ MAX_CHUNK_CHARS = 1_100
 CHUNK_OVERLAP_CHARS = 140
 
 _PII_PATTERNS = (
-    re.compile(r"\b(?:MRN|medical record(?: number| #)?|patient ID)\s*[:#=-]?\s*[A-Z0-9][A-Z0-9-]{2,}\b", re.I),
+    re.compile(r"\b(?:MRN|medical record(?: number| #)?|patient ID)\s*[:#=-]?\s*(?=[A-Z0-9-]*\d)[A-Z0-9][A-Z0-9-]{2,}\b", re.I),
     re.compile(r"\b(?:date of birth|DOB)\s*[:#=-]?\s*(?:\d{1,2}[/-]){2}\d{2,4}\b", re.I),
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
     re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I),

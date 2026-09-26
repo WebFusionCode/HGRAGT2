@@ -1,60 +1,133 @@
-from litellm import acompletion
-from litellm.exceptions import AuthenticationError, RateLimitError, APIConnectionError
-from typing import List, Dict, Any
+"""Construct citation-complete responses only from retrieved source passages."""
 
-# A highly constrained system prompt for clinical safety and multi-hop GraphRAG.
-# Enforces inline citations, epistemic refusals, contradiction surfacing, and multi-hop reasoning.
-SYSTEM_PROMPT = """You are a highly precise, zero-trust clinical AI assistant.
-Your task is to answer the user's query STRICTLY based on the provided retrieved context.
+from __future__ import annotations
 
-CRITICAL SAFETY INSTRUCTIONS:
-1. MULTI-HOP REASONING: You must synthesize and connect relationships across multiple documents if required (e.g., Document A mentions a treatment, Document B mentions a risk of that treatment).
-2. INLINE CITATIONS: You MUST provide inline citations pointing to the exact chunk ID used for every claim. Format your citations like this: [chunk_id].
-3. EPISTEMIC REFUSAL: If the provided context does NOT contain sufficient information to fully and safely answer the query, you MUST explicitly state: "Insufficient evidence retrieved." Do not hallucinate or rely on outside knowledge.
-4. CONFLICT DETECTION: If the provided context documents contradict each other (e.g., opposing treatments or guidelines), you MUST explicitly surface this contradiction to the user. State clearly that there is conflicting evidence and describe the conflict safely without making a definitive clinical decision yourself.
+import re
+from collections import defaultdict
+from typing import Any
 
-Retrieved Context Documents:
-{context}
+from ingest import contains_identifier, redact_identifiers
+from retrieve import tokenize
 
-Respond safely, concisely, and strictly follow the instructions above.
-"""
 
-async def generate_clinical_response(query: str, retrieved_docs: List[Dict[str, Any]]) -> str:
-    """
-    Calls the LLM via LiteLLM with a strict prompt structure to enforce zero-trust clinical RAG rules.
-    """
-    if not retrieved_docs:
-        return "Insufficient evidence retrieved."
-        
-    # Format the retrieved documents into the context string
-    context_str = ""
-    for doc in retrieved_docs:
-        doc_id = doc.get('metadata', {}).get('doc_id', doc.get('id', 'unknown'))
-        context_str += f"\n--- Document [{doc_id}] ---\n{doc['content']}\n"
-        
-    prompt = SYSTEM_PROMPT.format(context=context_str)
-    
-    try:
-        # We can easily swap 'gpt-4o' with 'claude-3-5-sonnet-20240620' or local models via LiteLLM
-        # Upgraded to use heavy frontier models for the generation step as requested
-        response = await acompletion(
-            model="groq/llama-3.1-70b-versatile",
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": query}
-            ],
-            temperature=0.0, # Strict deterministic generation for clinical safety
-            max_tokens=500
-        )
-        
-        return response.choices[0].message.content
-        
-    except AuthenticationError as e:
-        return f"ERROR_AUTH: Invalid API Key or Authentication Failure. {str(e)}"
-    except RateLimitError as e:
-        return f"ERROR_RATELIMIT: You have exceeded your rate limit. Please try again later. {str(e)}"
-    except APIConnectionError as e:
-        return f"ERROR_NETWORK: Unable to connect to the LLM provider. {str(e)}"
-    except Exception as e:
-        print(f"Generation error: {e}")
-        return f"ERROR_SYSTEM: Unable to generate response due to internal system error. {str(e)}"
+def _missing_message(terms: list[str]) -> str:
+    if terms:
+        return "No accessible current passage matched these requested details: " + ", ".join(terms) + "."
+    return "No accessible current passage provided enough detail to answer this question."
+
+
+def _extract_claims(query: str, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    query_terms = set(tokenize(query))
+    claims: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    table_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for source in sources:
+        if source["metadata"].get("table"):
+            table_groups[source["doc_id"]].append(source)
+    focused_table_ids: set[str] = set()
+    for rows in table_groups.values():
+        matching_rows = []
+        for source in rows:
+            item_label = source["content"].split("|", 1)[0].partition(":")[2]
+            item_terms = set(tokenize(item_label)) - {"medication", "example", "medicine", "equipment", "transfer", "sling", "model"}
+            if item_terms & query_terms:
+                matching_rows.append(source["id"])
+        if matching_rows:
+            focused_table_ids.update(matching_rows)
+
+    for source in sources:
+        metadata = source["metadata"]
+        if metadata.get("status") != "active":
+            continue
+        if metadata.get("table") and focused_table_ids and source["id"] not in focused_table_ids:
+            continue
+        content = source["content"].strip()
+        if metadata.get("table") or "record_number" in metadata or "row_number" in metadata:
+            candidates = [content]
+        else:
+            candidates = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", content) if part.strip()]
+
+        ranked = []
+        for candidate in candidates:
+            terms = set(tokenize(candidate))
+            overlap = len(query_terms & terms)
+            if overlap:
+                ranked.append((overlap / max(len(query_terms), 1), overlap, candidate))
+        ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        limit = 1 if metadata.get("table") or "record_number" in metadata or "row_number" in metadata else 2
+        for _, _, statement in ranked[:limit]:
+            key = (source["id"], statement)
+            if key in seen:
+                continue
+            seen.add(key)
+            claims.append({"text": statement, "citations": [source["id"]], "source_status": metadata.get("status", "active")})
+    return claims
+
+
+def generate_clinical_response(
+    query: str,
+    retrieved_docs: list[dict[str, Any]],
+    conflicts: list[dict[str, Any]] | None = None,
+    missing_evidence: list[str] | None = None,
+    evidence_coverage: float = 1.0,
+    matched_query_terms: int = 2,
+    unmatched_specific_terms: list[str] | None = None,
+) -> dict[str, Any]:
+    """Return exact extractive claims, citations, decision state, and evidence gaps."""
+    conflicts = conflicts or []
+    missing_evidence = missing_evidence or []
+    unmatched_specific_terms = unmatched_specific_terms or []
+    if contains_identifier(query):
+        return {
+            "answer": "I can't process questions containing direct personal identifiers. Remove the identifier and ask about the general policy or process.",
+            "claims": [], "decision": "identifier_blocked", "missing_evidence": ["A de-identified question"],
+        }
+
+    current_sources = [source for source in retrieved_docs if source["metadata"].get("status") == "active"]
+    claims = _extract_claims(query, current_sources)
+
+    if not claims or (not conflicts and (evidence_coverage < 0.3 or matched_query_terms < 2 or unmatched_specific_terms)):
+        if unmatched_specific_terms:
+            missing_evidence = list(dict.fromkeys(unmatched_specific_terms + missing_evidence))
+        if conflicts:
+            claims = []
+        else:
+            stale_sources = [source for source in retrieved_docs if source["metadata"].get("status") in {"superseded", "retired"}]
+            if stale_sources:
+                missing = ["A current, in-force source"]
+                response = "Insufficient evidence retrieved. The matching passage is superseded or retired, and no current source supports an answer."
+            else:
+                missing = missing_evidence or ["A passage that directly addresses the question"]
+                response = "Insufficient evidence retrieved. " + _missing_message(missing)
+            safe, _ = redact_identifiers(response)
+            return {"answer": safe, "claims": [], "decision": "refused", "missing_evidence": missing}
+
+    claim_lines = [f"- {claim['text']} [{claim['citations'][0]}]" for claim in claims]
+    if conflicts:
+        conflict = conflicts[0]
+        claims = [
+            {"text": passage["content"], "citations": [passage["id"]], "source_status": passage["status"]}
+            for passage in conflict["passages"]
+        ]
+        conflict_lines = []
+        for passage in conflict["passages"]:
+            label = "current" if passage["status"] == "active" else passage["status"]
+            conflict_lines.append(f"- {label.title()} source ({passage['doc_id']}, effective {passage.get('effective_date', 'date unavailable')}): {passage['content']} [{passage['id']}]")
+        answer = "Conflicting instructions were retrieved. The source status and effective date matter; escalate to the named policy owner before acting.\n\n" + "\n".join(conflict_lines)
+        decision = "conflict"
+    else:
+        answer = "Retrieved evidence (quoted from current sources):\n\n" + "\n".join(claim_lines)
+        decision = "answered"
+        overdue = [source for source in current_sources if source.get("freshness_status") == "review due"]
+        if overdue:
+            answer = "A matching source is past its scheduled review date. Confirm that it remains in force with the policy owner.\n\n" + answer
+
+    safe_answer, _ = redact_identifiers(answer)
+    for claim in claims:
+        claim["text"], _ = redact_identifiers(claim["text"])
+    return {
+        "answer": safe_answer,
+        "claims": claims,
+        "decision": decision,
+        "missing_evidence": missing_evidence,
+    }

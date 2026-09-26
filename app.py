@@ -1,232 +1,273 @@
-import streamlit as st
+from __future__ import annotations
+
+import os
+from typing import Any
+
 import requests
-import json
-import time
-import streamlit.components.v1 as components
-from graph import extract_clinical_entities, generate_interactive_graph
-from xai import highlight_relevant_sentences
+import streamlit as st
 
-# API Endpoint Configuration
-API_URL = "http://127.0.0.1:8000/api/v1/query"
 
-# Page Configuration
 st.set_page_config(
-    page_title="Zero-Trust Clinical RAG",
+    page_title="VoughtCorp",
+    page_icon=":material/clinical_notes:",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# Custom CSS for Premium Clinical Dark Mode (V2 Aesthetic)
-st.markdown("""
-<style>
-    /* Dark Mode Background */
-    .stApp {
-        background-color: #0b1115;
-        color: #e2e8f0;
-    }
-    
-    /* Subtle glowing glassmorphism columns */
-    div[data-testid="column"] {
-        background: rgba(22, 33, 43, 0.6);
-        border: 1px solid rgba(56, 189, 248, 0.15);
-        border-radius: 12px;
-        padding: 15px;
-        backdrop-filter: blur(10px);
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-    }
-    
-    div[data-testid="column"]:hover {
-        box-shadow: 0 8px 32px 0 rgba(56, 189, 248, 0.1);
-    }
-    
-    /* Headers with Cyan/Teal Accents */
-    h1, h2, h3 {
-        color: #38bdf8;
-        font-family: 'Inter', sans-serif;
-        font-weight: 600;
-        letter-spacing: -0.5px;
-    }
-    
-    /* Smooth metrics styling */
-    div[data-testid="stMetricValue"] {
-        color: #e2e8f0;
-    }
-    div[data-testid="stMetricLabel"] {
-        color: #94a3b8;
-    }
-    
-    /* XAI Highlight pulsing animation */
-    @keyframes softPulse {
-        0% { box-shadow: 0 0 0 0 rgba(234, 179, 8, 0.4); background-color: rgba(234, 179, 8, 0.2); }
-        70% { box-shadow: 0 0 10px 4px rgba(234, 179, 8, 0); background-color: rgba(234, 179, 8, 0.35); }
-        100% { box-shadow: 0 0 0 0 rgba(234, 179, 8, 0); background-color: rgba(234, 179, 8, 0.2); }
-    }
-    .xai-highlight {
-        color: #fef08a;
-        padding: 2px 6px;
-        border-radius: 4px;
-        animation: softPulse 2s infinite;
-        border: 1px solid rgba(234, 179, 8, 0.3);
-    }
-    
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        background-color: #0f172a;
-        border-right: 1px solid #1e293b;
-    }
-</style>
-""", unsafe_allow_html=True)
+API_ROOT = os.getenv("KNOWLEDGE_API_URL", "http://127.0.0.1:8000").rstrip("/")
+ROLE_LABELS = {
+    "clinician": "Clinician",
+    "operations": "Operations",
+    "billing_admin": "Billing administrator",
+    "patient": "Patient",
+}
+EXAMPLES = [
+    "Can staff reuse a transfer sling with visible contamination after wiping it?",
+    "What should staff check before an assisted transfer?",
+    "Does Medication Beta require prior authorization?",
+    "What dose of amoxicillin is approved for a child?",
+]
 
-# Initialize Session State
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "latest_sources" not in st.session_state:
-    st.session_state.latest_sources = []
-if "latest_query" not in st.session_state:
-    st.session_state.latest_query = ""
 
-# --- Metrics Dashboard (Top) ---
-st.markdown("### Clinical RAG Evaluation Dashboard")
-col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-with col_m1:
-    st.metric(label="System Groundedness", value="100%", delta="5/5 Verified")
-with col_m2:
-    st.metric(label="Hallucination Rate", value="0%", delta="-0% Error", delta_color="inverse")
-with col_m3:
-    st.metric(label="Avg Retrieval Latency", value="42 ms", delta="-15 ms")
-with col_m4:
-    st.metric(label="RRF Search Mode", value="Enabled (Hybrid)")
+@st.cache_data(ttl=5, max_entries=1)
+def fetch_health() -> dict[str, Any]:
+    response = requests.get(f"{API_ROOT}/health", timeout=2)
+    response.raise_for_status()
+    return response.json()
 
-st.divider()
 
-# --- Main 3-Column Layout ---
-col1, col2, col3 = st.columns([1, 1, 1], gap="large")
+@st.cache_data(ttl=30, max_entries=8)
+def fetch_catalog(role: str) -> list[dict[str, Any]]:
+    response = requests.get(f"{API_ROOT}/api/v1/catalog", params={"user_role": role}, timeout=3)
+    response.raise_for_status()
+    return response.json()
 
-# COLUMN 1: Chat/Query Interface & RBAC
-with col1:
-    st.markdown("### Query Interface")
-    
-    st.markdown("**User Context (RBAC)**")
-    selected_role = st.selectbox(
-        "Simulate Role",
-        ["clinician", "patient", "billing_admin"],
-        label_visibility="collapsed"
+
+def citation_source_map(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    sources = {source["id"]: source for source in result.get("sources", [])}
+    for conflict in result.get("conflicts", []):
+        for passage in conflict.get("passages", []):
+            sources.setdefault(passage["id"], {
+                "id": passage["id"],
+                "doc_id": passage["doc_id"],
+                "content": passage["content"],
+                "metadata": {
+                    "title": passage["title"],
+                    "status": passage["status"],
+                    "effective_date": passage.get("effective_date"),
+                    "source_type": "Conflicting source",
+                },
+                "freshness_status": passage["status"],
+                "score": 0,
+            })
+    return sources
+
+
+def render_citation(citation_id: str, source: dict[str, Any]) -> None:
+    metadata = source.get("metadata", {})
+    title = metadata.get("title", source.get("doc_id", "Source passage"))
+    state = source.get("freshness_status", metadata.get("status", "source"))
+    with st.expander(f"{citation_id}  |  {title}  |  {state}", icon=":material/article:"):
+        details = [source.get("doc_id", "Unknown document"), metadata.get("source_type", "Source")]
+        if metadata.get("section"):
+            details.append(metadata["section"])
+        if metadata.get("row_number"):
+            details.append(f"table row {metadata['row_number']}")
+        if metadata.get("record_number"):
+            details.append(f"record {metadata['record_number']}")
+        if metadata.get("effective_date"):
+            details.append(f"effective {metadata['effective_date']}")
+        st.caption(" | ".join(str(value) for value in details if value))
+        st.write(source["content"])
+        st.caption(f"Passage ID: {citation_id}")
+
+
+def render_result(result: dict[str, Any]) -> None:
+    decision = result.get("decision", "refused")
+    sources = citation_source_map(result)
+    status_labels = {
+        "answered": ("Evidence found", "green"),
+        "conflict": ("Conflict detected", "orange"),
+        "refused": ("Insufficient evidence", "red"),
+        "identifier_blocked": ("Identifier blocked", "red"),
+    }
+    label, color = status_labels.get(decision, ("Review required", "gray"))
+    st.badge(label, color=color)
+
+    if decision == "conflict":
+        for conflict in result.get("conflicts", []):
+            st.warning(conflict["summary"], icon=":material/compare_arrows:")
+            for passage in conflict.get("passages", []):
+                citation_id = passage["id"]
+                render_citation(citation_id, sources[citation_id])
+    elif result.get("claims"):
+        st.markdown("**Retrieved statements**")
+        for claim in result["claims"]:
+            st.markdown(claim["text"])
+            for citation_id in claim.get("citations", []):
+                source = sources.get(citation_id)
+                if source:
+                    render_citation(citation_id, source)
+    else:
+        st.write(result.get("answer", "Insufficient evidence retrieved."))
+
+    missing = result.get("missing_evidence", [])
+    if missing and decision in {"refused", "identifier_blocked"}:
+        st.caption("Missing: " + ", ".join(missing))
+
+    if result.get("sources"):
+        with st.expander(f"Retrieval audit | {len(result['sources'])} passages", icon=":material/manage_search:"):
+            st.caption(f"{result.get('retrieval_mode', 'Hybrid retrieval')} | {result.get('processing_ms', 0):.0f} ms")
+            for source in result["sources"]:
+                meta = source["metadata"]
+                st.markdown(f"**{source['doc_id']} | {meta.get('title', 'Source')}**")
+                st.caption(f"{source['id']} | {meta.get('source_type', 'Source')} | {source.get('freshness_status', 'unknown')} | score {source.get('score', 0):.3f}")
+                st.write(source["content"])
+
+    privacy_status = "blocked input" if result.get("pii_blocked") else f"{result.get('corpus_redactions', 0)} redactions at ingestion"
+    st.caption(
+        f"{len(result.get('sources', []))} accessible passages | {result.get('retrieval_mode', 'local retrieval')} | "
+        f"{result.get('processing_ms', 0):.0f} ms | identifier scan "
+        f"{privacy_status}"
     )
-    
-    if st.button("Auto-fill Conflict Test: Achilles", use_container_width=True):
-        st.session_state.latest_query = "Should I use corticosteroid injections for Achilles Tendinopathy?"
-    
-    prompt = st.chat_input("Enter clinical query...")
-    if not prompt and st.session_state.latest_query:
-        prompt = st.session_state.latest_query
-        st.session_state.latest_query = ""
-        
-    if prompt:
-        # Display chat history (only keeping the latest for a clean view)
-        st.markdown(f"**User:** {prompt}")
-        
-        with st.status("Executing GraphRAG Pipeline...", expanded=True) as status:
-            st.write("Initiating vector similarity search...")
-            time.sleep(0.5)
-            st.write("Executing sparse BM25 retrieval...")
-            time.sleep(0.5)
-            st.write("Applying Reciprocal Rank Fusion (RRF)...")
-            
-            try:
-                payload = {"query": prompt, "user_role": selected_role}
-                response = requests.post(API_URL, json=payload, timeout=30)
-                response.raise_for_status()
-                data = response.json()
-                
-                answer = data.get("answer", "No answer provided.")
-                st.session_state.latest_sources = data.get("sources", [])
-                st.session_state.latest_query_for_xai = prompt
-                
-                st.write("Generating multi-hop relationships...")
-                time.sleep(0.5)
-                
-                with st.spinner('Synthesizing clinical response...'):
-                    # The backend might take a moment to fetch from the LLM
-                    pass
-                
-                status.update(label="Pipeline Complete", state="complete", expanded=False)
-                
-                st.markdown("---")
-                st.markdown("**System Response:**")
-                
-                # Check for explicit backend errors caught by our try/except in generate.py
-                if answer.startswith("ERROR_AUTH"):
-                    st.error(f"**Authentication Error:** {answer.replace('ERROR_AUTH:', '').strip()}")
-                elif answer.startswith("ERROR_RATELIMIT"):
-                    st.warning(f"**Rate Limit Exceeded:** {answer.replace('ERROR_RATELIMIT:', '').strip()}")
-                elif answer.startswith("ERROR_NETWORK"):
-                    st.error(f"**Network/API Error:** {answer.replace('ERROR_NETWORK:', '').strip()}")
-                elif answer.startswith("ERROR_SYSTEM"):
-                    st.error(f"**Internal System Error:** {answer.replace('ERROR_SYSTEM:', '').strip()}")
-                else:
-                    st.info(answer)
-                
-            except Exception as e:
-                status.update(label="System Error", state="error", expanded=True)
-                st.error(f"**FastAPI Connection Error:** {str(e)}")
 
-# COLUMN 2: Evidence & Traceability (XAI Highlights)
-with col2:
-    st.markdown("### Evidence & Traceability")
-    st.caption("Explainable AI (XAI) Saliency Highlighting")
-    
-    sources = st.session_state.latest_sources
-    query = st.session_state.get("latest_query_for_xai", "")
-    
-    if not sources:
-        st.write("No evidence retrieved yet.")
-    else:
-        for source in sources:
-            with st.expander(f"Document ID: {source['id']} | Score: {source['score']:.4f}", expanded=True):
-                st.markdown(f"**RBAC Metadata:** `{json.dumps(source['metadata'])}`")
-                # Highlight relevant sentences based on the query
-                highlighted_text = highlight_relevant_sentences(query, source['content'])
-                st.markdown(highlighted_text, unsafe_allow_html=True)
 
-# COLUMN 3: Explainability & Graph (GraphRAG)
-with col3:
-    st.markdown("### Multi-Hop GraphRAG")
-    st.caption("Live Traversal & Reasoning Path")
-    
-    if not sources:
-        st.write("Awaiting query to generate graph.")
-    else:
-        graph_placeholder = st.empty()
-        
-        # Mocking the LLM's reasoning path based on the query for the demo
-        reasoning_path = []
-        if "achilles" in query.lower():
-            reasoning_path = ["Query", "guideline-achilles-001", "Achilles Tendinopathy", "Corticosteroid Injections", "Tendon Rupture"]
-        elif "concussion" in query.lower():
-            reasoning_path = ["Query", "guideline-concussion-001", "Concussion", "NSAIDs", "Intracranial Bleeding"]
+for key, default in (("chat_history", []), ("pending_question", ""), ("evaluation_report", None)):
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+st.title(":material/clinical_notes: Northstar knowledge desk")
+st.caption("Evidence workspace for clinical guidance, operations, formulary rules, and source conflicts")
+
+with st.sidebar:
+    st.subheader("Access context")
+    selected_role = st.selectbox(
+        "Simulated user role",
+        list(ROLE_LABELS),
+        format_func=lambda role: ROLE_LABELS[role],
+        key="selected_role",
+    )
+    if st.session_state.get("active_role") != selected_role:
+        st.session_state.chat_history = []
+        st.session_state.evaluation_report = None
+        st.session_state.active_role = selected_role
+    st.caption("Demo role is passed to the API retrieval filter. Connect production roles to verified SSO claims.")
+
+    try:
+        health = fetch_health()
+        st.success("Local API ready", icon=":material/check_circle:")
+        st.caption("All indexed content is synthetic. No hosted answer model is called.")
+    except requests.RequestException:
+        health = None
+        st.error("Local API is offline. Start the backend on port 8000.", icon=":material/wifi_off:")
+    st.caption("Northstar demo | local workspace")
+
+if health:
+    metric_docs, metric_passages, metric_search = st.columns(3)
+    metric_docs.metric("Indexed documents", health["document_count"])
+    metric_passages.metric("Citable passages", health["passage_count"])
+    metric_search.metric("Retrieval", "Hybrid")
+    st.caption(f"{health['corpus_name']} | {health['retrieval_mode']} | {health['answer_mode']}")
+
+view = st.segmented_control(
+    "Workspace view",
+    ["Ask", "Corpus", "Quality"],
+    default="Ask",
+    label_visibility="collapsed",
+    key="workspace_view",
+)
+
+if view == "Ask":
+    st.subheader("Ask the knowledge base", divider="gray")
+    st.caption("Answers quote source passages. Unsupported questions are refused; contradictory versions are shown together.")
+
+    if not st.session_state.chat_history:
+        st.markdown("**Try a question**")
+        suggestion_columns = st.columns(2)
+        for index, example in enumerate(EXAMPLES):
+            if suggestion_columns[index % 2].button(example, key=f"example_{index}", width="stretch"):
+                st.session_state.pending_question = example
+                st.rerun()
+
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            if message["role"] == "user":
+                st.write(message["content"])
+            else:
+                render_result(message["response"])
+
+    typed_question = st.chat_input("Ask about a policy, guideline, device, formulary, or operational record")
+    question = typed_question or st.session_state.pending_question
+    st.session_state.pending_question = ""
+
+    if question:
+        if not health:
+            st.error("The knowledge API is offline. Start the backend, then try again.")
         else:
-            reasoning_path = ["Query"] + [s["id"] for s in sources]
+            try:
+                with st.spinner("Searching accessible evidence"):
+                    response = requests.post(
+                        f"{API_ROOT}/api/v1/query",
+                        json={"query": question, "user_role": selected_role},
+                        timeout=25,
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                user_text = "Question blocked because it contained a direct identifier." if result.get("pii_blocked") else question
+                st.session_state.chat_history.extend([
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "response": result},
+                ])
+                st.rerun()
+            except requests.RequestException:
+                st.error("The knowledge API could not complete this request. Check that the backend is running.")
 
-        # Stage 1: Document Retrieval
-        G1 = extract_clinical_entities(sources, query, stage=1)
-        html1 = generate_interactive_graph(G1, "temp_graph1.html")
-        with graph_placeholder.container():
-            st.info("Stage 1: Retrieving Source Documents...")
-            components.html(html1, height=450, scrolling=True)
-        time.sleep(1.2)
-        
-        # Stage 2: Entity Extraction
-        G2 = extract_clinical_entities(sources, query, stage=2)
-        html2 = generate_interactive_graph(G2, "temp_graph2.html")
-        with graph_placeholder.container():
-            st.warning("Stage 2: Extracting Medical Entities & Relationships...")
-            components.html(html2, height=450, scrolling=True)
-        time.sleep(1.5)
-        
-        # Stage 3: Active Traversal
-        G3 = extract_clinical_entities(sources, query, stage=3, reasoning_path=reasoning_path)
-        html3 = generate_interactive_graph(G3, "temp_graph3.html")
-        with graph_placeholder.container():
-            st.success("Stage 3: Tracing LLM Reasoning Path (Multi-Hop)")
-            components.html(html3, height=450, scrolling=True)
+elif view == "Corpus":
+    st.subheader("Accessible source catalog", divider="gray")
+    st.caption(f"Showing documents available to the {ROLE_LABELS[selected_role].lower()} role. Filtering is enforced by the API.")
+    try:
+        catalog = fetch_catalog(selected_role)
+        if not catalog:
+            st.info("No documents are available to this role.")
+        for document in catalog:
+            title = f"{document['title']} | {document['doc_id']}"
+            status = document.get("freshness_status", document.get("status", "unknown"))
+            with st.container(border=True):
+                st.markdown(f"**{title}**")
+                st.caption(
+                    f"{document['source_type']} | {document['publisher']} | v{document['version']} | "
+                    f"effective {document['effective_date']} | review {document['review_date']}"
+                )
+                detail, count = st.columns([3, 1])
+                detail.badge(status, color="green" if status == "current" else "orange" if status == "review due" else "gray")
+                count.metric("Passages", document["chunk_count"])
+                if document.get("superseded_by"):
+                    st.caption(f"Superseded by {document['superseded_by']}")
+    except requests.RequestException:
+        st.error("The source catalog is unavailable while the API is offline.")
+
+else:
+    st.subheader("Retrieval quality", divider="gray")
+    st.caption("Deterministic benchmark over a small, authored question set. Scores reflect this synthetic corpus only.")
+    if st.button("Run evaluation", type="primary", icon=":material/play_arrow:"):
+        try:
+            with st.spinner("Running retrieval, refusal, citation, conflict, and privacy checks"):
+                response = requests.post(f"{API_ROOT}/api/v1/evaluate", timeout=30)
+                response.raise_for_status()
+                st.session_state.evaluation_report = response.json()
+        except requests.RequestException:
+            st.error("Evaluation requires the local API. Start the backend, then run it again.")
+
+    report = st.session_state.evaluation_report
+    if report:
+        metrics = report["metrics"]
+        first, second, third = st.columns(3)
+        first.metric("Grounded claims", f"{metrics['grounded_claims_pct']:.1f}%", f"{metrics['claims_checked']} claims checked")
+        second.metric("Retrieval recall@6", f"{metrics['retrieval_recall_at_6_pct']:.1f}%")
+        third.metric("Refusal accuracy", f"{metrics['refusal_accuracy_pct']:.1f}%")
+        fourth, fifth, sixth = st.columns(3)
+        fourth.metric("Conflict detection", f"{metrics['conflict_detection_pct']:.1f}%")
+        fifth.metric("ACL leaks", metrics["acl_leaks"], delta_color="inverse")
+        sixth.metric("Identifier leaks", metrics["identifier_leaks"], delta_color="inverse")
+        st.caption(f"{metrics['questions']} questions | {metrics['unsupported_claims']} unsupported claims | {report['retrieval_mode']}")
+        st.dataframe(report["cases"], hide_index=True)
