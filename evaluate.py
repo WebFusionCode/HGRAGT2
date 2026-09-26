@@ -79,7 +79,7 @@ async def evaluate_groundedness():
         
         try:
             response = await acompletion(
-                model="groq/qwen/qwen3.8-27b",
+                model="groq/openai/gpt-oss-20b",
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
                 temperature=0.0
