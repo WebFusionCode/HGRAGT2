@@ -19,7 +19,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -139,7 +139,6 @@ def scrape_url(session: requests.Session, url: str) -> ScrapedDocument:
         host = _validate_public_url(final_url)
         fetched_at = utc_now()
         last_modified = response.headers.get("Last-Modified")
-        encoding = response.encoding or "utf-8"
     finally:
         response.close()
 
@@ -227,6 +226,9 @@ def _is_transient_error(exc: BaseException) -> bool:
 async def embed_chunks(chunks: list[dict[str, Any]], model: str, dimensions: int, batch_size: int) -> None:
     import litellm
 
+    def field(value: Any, name: str) -> Any:
+        return value[name] if isinstance(value, dict) else getattr(value, name)
+
     for start in range(0, len(chunks), batch_size):
         batch = chunks[start:start + batch_size]
         texts = [chunk["content"] for chunk in batch]
@@ -237,11 +239,11 @@ async def embed_chunks(chunks: list[dict[str, Any]], model: str, dimensions: int
                     input=texts,
                     dimensions=dimensions,
                 )
-                items = sorted(response.data, key=lambda item: item["index"])
+                items = sorted(response.data, key=lambda item: field(item, "index"))
                 if len(items) != len(batch):
                     raise ValueError("Embedding provider returned a different number of vectors than inputs")
                 for chunk, item in zip(batch, items):
-                    vector = item["embedding"]
+                    vector = field(item, "embedding")
                     if len(vector) != dimensions:
                         raise ValueError(
                             f"Embedding dimension mismatch: expected {dimensions}, received {len(vector)}"
@@ -287,7 +289,7 @@ async def _create_schema(conn: Any, dimensions: int) -> None:
     await conn.execute(f"CREATE INDEX IF NOT EXISTS clinical_chunks_metadata_gin_idx ON {TABLE_NAME} USING gin (chunk_metadata)")
 
 
-async def insert_chunks(chunks: list[dict[str, Any]], database_url: str, dimensions: int, batch_size: int) -> int:
+async def _insert_chunks_once(chunks: list[dict[str, Any]], database_url: str, dimensions: int, batch_size: int) -> int:
     import asyncpg
     from pgvector import Vector
     from pgvector.asyncpg import register_vector
@@ -324,6 +326,19 @@ async def insert_chunks(chunks: list[dict[str, Any]], database_url: str, dimensi
         return len(rows)
     finally:
         await conn.close()
+
+
+async def insert_chunks(chunks: list[dict[str, Any]], database_url: str, dimensions: int, batch_size: int) -> int:
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            return await _insert_chunks_once(chunks, database_url, dimensions, batch_size)
+        except Exception as exc:
+            if attempt >= MAX_RETRIES or not _is_transient_error(exc):
+                raise
+            delay = min(2 ** attempt, 8)
+            _LOGGER.warning("Database connection failed; retrying transaction in %ss", delay)
+            await asyncio.sleep(delay)
+    raise RuntimeError("Database insertion exhausted retries")
 
 
 def _console() -> Any:
@@ -373,7 +388,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def run(args: argparse.Namespace) -> int:
-    urls = list(dict.fromkeys(args.urls if args.urls else TARGET_URLS))
+    urls = list(dict.fromkeys([*TARGET_URLS, *(args.urls or [])]))
     if not urls:
         _LOGGER.error("No source URLs were configured.")
         return 2
@@ -432,8 +447,7 @@ async def run(args: argparse.Namespace) -> int:
             if result["status"] == "ready":
                 result["status"] = "dry-run"
         _print_results(results)
-        total_tokens = sum(len(split_document(document.text)) for document in documents)
-        _LOGGER.info("Dry run complete: %s source(s), %s passage(s). No embeddings or database writes performed.", len(documents), total_tokens)
+        _LOGGER.info("Dry run complete: %s source(s), %s passage(s). No embeddings or database writes performed.", len(documents), len(chunks))
         return 1 if any(item["status"] == "failed" for item in results) else 0
 
     database_url = os.getenv("DATABASE_URL", "").strip()
